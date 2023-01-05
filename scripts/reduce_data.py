@@ -1,56 +1,46 @@
+from argparse import ArgumentParser
 from pathlib import Path
 
+import yaml
 from jwst.pipeline import Image2Pipeline
+
 from jwst_fourier.pipeline import Fourier1Pipeline
 
-input_file = Path(
-    # Data file wise 1828 (FULL, slow)
-    "/home/vandal/Documents/data/jwst-obs/01189/jw01189017001_06101_00001_nis_uncal.fits"
-    # Test file from comm (sub80, quick)
-    # "/home/vandal/Documents/data/jwst-obs/01093/jw01093001001_03106_00002_nis_uncal.fits"
+psr = ArgumentParser(description="Run Fourier imaging JWST reduction")
+psr.add_argument(
+    "config_file", type=str, help="YAML configuration file for pipeline script"
 )
 
-# %%
-output_dir_parent = Path("results/default_pipeline")
+cli_args = psr.parse_args()
+config_file = cli_args.config_file
+
+with open(config_file, "r") as cfg:
+    cfg_dict = yaml.safe_load(cfg)
+
+input_file = Path(cfg_dict["input_file"])
+output_dir_parent = Path(cfg_dict["output_dir_parent"])
+
 output_dir_stage1 = output_dir_parent
-output_dir_stage1.mkdir(exist_ok=True, parents=True)
 output_dir_stage2 = output_dir_parent
+if "stage1_subdir" in cfg_dict and cfg_dict["stage1_subdir"] is not None:
+    output_dir_stage1 = output_dir_stage1 / cfg_dict["stage1_subdir"]
+if "stage2_subdir" in cfg_dict and cfg_dict["stage2_subdir"] is not None:
+    output_dir_stage2 = output_dir_stage2 / cfg_dict["stage2_subdir"]
+output_dir_stage1.mkdir(exist_ok=True, parents=True)
 output_dir_stage2.mkdir(exist_ok=True, parents=True)
 
+steps = cfg_dict.get("steps")
+step_config = cfg_dict.get("step_config")
 
-# %%
-steps = [
-    "group_scale",
-    "dq_init",
-    "saturation",
-    # "oneoverf",
-    "superbias",
-    "refpix",
-    "linearity",
-    "persistence",
-    "dark_current",
-    "jump",
-    "ramp_fit",
-    "gain_scale",
-]
+run_stage1 = cfg_dict.get("run_stage1") or False
+run_stage2 = cfg_dict.get("run_stage2") or False
 
-config_dict = {
-    "oneoverf": {
-        "save_results": True,
-        "save_intermediate": True,
-    },
-}
-
-run_stage1 = True
-run_stage2 = True
-
-# %%
 if run_stage1:
     pipe1 = Fourier1Pipeline()
     pipe1.save_results = True
     pipe1.output_dir = str(output_dir_stage1)
     pipe1.ipc.skip = True
-    pipe1.run(str(input_file), step_list=steps, cfg_dict=config_dict)
+    pipe1.run(str(input_file), step_list=steps, cfg_dict=step_config)
 
 if run_stage2:
     file_base = input_file.name
