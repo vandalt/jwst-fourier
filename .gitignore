@@ -156,3 +156,4 @@ cython_debug/
 .vim-arsync
 data
 results
+pyrightconfig.json
