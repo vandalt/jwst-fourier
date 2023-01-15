@@ -32,7 +32,7 @@ def stack_ramp(ramp: np.ndarray) -> np.ndarray:
     return deepstack, rms
 
 
-def compute_oof(ramp: np.ndarray, weights: np.ndarray) -> np.ndarray:
+def compute_oof(ramp: np.ndarray, weights: np.ndarray, subarray: str) -> np.ndarray:
     """
     Compute 1/f noise for each column in the ramp.
 
@@ -54,6 +54,8 @@ def compute_oof(ramp: np.ndarray, weights: np.ndarray) -> np.ndarray:
         The data from which 1/f noise should be computed
     weights : np.ndarray
         Weight of each pixel in the array, with shape (ngroup, dimy, dimx)
+    subarray : str
+        Subarray corresponding to the data, dictates how shape is hanlded
 
     Returns
     -------
@@ -61,16 +63,17 @@ def compute_oof(ramp: np.ndarray, weights: np.ndarray) -> np.ndarray:
         1/f map with the same shape as ramp
     """
     # Get axis that is along columns (with length nrows)
-    if ramp.ndim > 3:
-        # If more than 3 dim: (nint, ngroup, n, ncol, *others)
-        col_axis = 2
+    if subarray == "FULL" and ramp.ndim > 3:
+        # If more than 3 dim and FULL: (nint, ngroup, *nrow*, ncol, namps)
+        # If more than 3 dim and SUB: (nint, *nrow*, ncol, namps)
+        col_axis = -3
     else:
-        # If 3 or less: (ngroup?, nrow, ncol) -> -2 is safest
+        # If FULL and 3 or less: (ngroup/int?, *nrow*, ncol) -> -2
+        # If not FULL: (ngroup/int?, *nrow*, ncol) -> r2
         col_axis = -2
     nrows = ramp.shape[col_axis]
 
     # Get index shape when we repeat along columns at then end
-    # TODO: Should we use -2 for weights, to allow 2D map as well?
     if col_axis >= 0:
         # Positive col_axis, index will be, e.g. [:, :, new, ...] For col = 2
         repeat_ind = np.s_[(slice(None),) * col_axis + (np.newaxis,) + (Ellipsis,)]
@@ -81,7 +84,7 @@ def compute_oof(ramp: np.ndarray, weights: np.ndarray) -> np.ndarray:
         ]
 
     # Sum along columns to get DC value in each column
-    dc = np.nansum(weights * ramp, axis=col_axis) / np.nansum(weights, axis=1)
+    dc = np.nansum(weights * ramp, axis=col_axis) / np.nansum(weights, axis=col_axis)
     # Make sure non nan
     dc = np.where(np.isfinite(dc), dc, 0)
     # Expand along column axis
@@ -115,12 +118,17 @@ def generate_noise_map(
         1/f noise map with same shape as sub
     """
 
-    nint, ngroup, nrow, ncol = sub.shape
+    if sub.ndim == 4:
+        nint, ngroup, nrow, ncol = sub.shape
+    elif sub.ndim == 3:
+        nint, nrow, ncol = sub.shape
+    else:
+        raise ValueError(f"Unsupported number of dimensions for data: {sub.ndim}")
 
     # Median on all pixels in each frame, keep int and group dims
     # and broadcast to match subarray
     if mean_per_frame:
-        sub = sub - np.nanmedian(sub, axis=(2, 3))[:, :, None, None]
+        sub = sub - np.nanmedian(sub, axis=(-2, -1))[:, :, None, None]
 
     if subarray == "FULL":
         # For full array, each amplificator has its own noise
@@ -128,19 +136,22 @@ def generate_noise_map(
         amp_nrows = 512
         namps = nrow // amp_nrows
         # I could not get numpy to reshape directly, but moving axes does the trick
-        per_amp_shape = (nint, ngroup, namps, amp_nrows, ncol)
+        try:
+            per_amp_shape = (nint, ngroup, namps, amp_nrows, ncol)
+        except NameError:
+            per_amp_shape = (nint, namps, amp_nrows, ncol)
         sub_per_amp = np.moveaxis(sub.reshape(per_amp_shape), -3, -1)
         pixel_weights_per_amp = np.moveaxis(
             pixel_weights.reshape(per_amp_shape[1:]), -3, -1
         )
         # Important that namps on last axis.
         # Function below has assumptions about first 4 axes (int, group, y, x)
-        dcmap_per_amp = compute_oof(sub_per_amp, pixel_weights_per_amp)
+        dcmap_per_amp = compute_oof(sub_per_amp, pixel_weights_per_amp, subarray)
         # Back to original shape. Again because of reshape need to move namp axis before
         dcmap = np.moveaxis(dcmap_per_amp, -1, -3).reshape(sub.shape)
     else:
         # If only one amp (like in all subarrays), vectorized correction works directly
-        dcmap = compute_oof(sub, pixel_weights)
+        dcmap = compute_oof(sub, pixel_weights, subarray)
 
     return dcmap
 
@@ -187,9 +198,11 @@ def generate_noise_map_iter(
             for iamp in range(4):
                 amp_first_row = iamp * amp_nrows
                 int_ind = np.s_[i, :, amp_first_row : amp_first_row + amp_nrows, :]
-                dcmap[int_ind] = compute_oof(sub[int_ind], pixel_weights[int_ind[1:]])
+                dcmap[int_ind] = compute_oof(
+                    sub[int_ind], pixel_weights[int_ind[1:]], subarray
+                )
         else:
-            dcmap[i] = compute_oof(sub[i], pixel_weights)
+            dcmap[i] = compute_oof(sub[i], pixel_weights, subarray)
 
     return dcmap
 
@@ -214,7 +227,9 @@ def _save_intermediate_fits(
 
 
 def correct_oof(
-    input_file: Union[str, datamodels.RampModel],
+    input_file: Union[
+        str, datamodels.RampModel, datamodels.ImageModel, datamodels.CubeModel
+    ],
     save_results: bool = False,
     output_dir: Optional[Union[Path, str]] = None,
     outlier_map: Optional[Union[Path, str]] = None,
@@ -232,7 +247,7 @@ def correct_oof(
 
     Parameters
     ----------
-    input_file : str
+    input_file : str, RampModel, ImageModel, CubeModel
         Path to the input file
     save_results : bool
         Whether result should be saved or not
@@ -252,11 +267,16 @@ def correct_oof(
 
     Returns
     -------
-    datamodels.RampModel
+    datamodels.JwstDataModel
         JWST data model with the `data` attribute replaced by 1/f-corrected data
     """
-    if not isinstance(input_file, datamodels.RampModel):
-        input_model = datamodels.RampModel(input_file)
+    if not isinstance(
+        input_file, (datamodels.RampModel, datamodels.ImageModel, datamodels.CubeModel)
+    ):
+        try:
+            input_model = datamodels.RampModel(input_file)
+        except ValueError:
+            input_model = datamodels.open(input_file)
     else:
         input_model = input_file
 
@@ -269,6 +289,8 @@ def correct_oof(
     pixel_weights[~np.isfinite(pixel_weights)] = 0.0
 
     # This automatically subtracts stacked ramp from each int
+    # TODO: Should we weight before subtracing?
+    # this could help mitigate subtraction of PSF as RMS higher in core
     sub = input_model.data - stacked_ramp
 
     # TODO: Without running separate outlier script, could flag some directly here using ramps and stack
