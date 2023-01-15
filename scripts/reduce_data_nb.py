@@ -1,15 +1,15 @@
+# %%
 from pathlib import Path
-import glob
 
-from jwst.pipeline import Image2Pipeline
-from jwst_fourier.pipeline import Fourier1Pipeline
+from jwst_fourier.pipeline import Fourier1Pipeline, Fourier2Pipeline
 
 input_file = Path(
-    "/home/vandal/Documents/data/jwst-obs/01093/jw01093001001_03106_00002_nis_uncal.fits"
+    "data/01189/jw01189017001_06101_00001_nis_uncal.fits"
 )
+input_files = [input_file]
 
 # %%
-output_dir_parent = Path("results/commissioning")
+output_dir_parent = Path("results/test2_oof")
 output_dir_stage1 = output_dir_parent
 output_dir_stage1.mkdir(exist_ok=True, parents=True)
 output_dir_stage2 = output_dir_parent
@@ -32,6 +32,15 @@ steps = [
     "gain_scale",
 ]
 
+steps_stage2 = [
+    "bkg_subtract",
+    "assign_wcs",
+    "flat_field",
+    "photom",
+    "resample",
+    "oneoverf",
+]
+
 config_dict = {
     "oneoverf": {
         "save_results": True,
@@ -40,7 +49,7 @@ config_dict = {
     },
 }
 
-run_stage1 = True
+run_stage1 = False
 run_stage2 = True
 
 # %%
@@ -58,9 +67,9 @@ for input_file in input_files:
         for suffix in ["rate", "rateints"]:
             stage1_file = str(output_dir_stage1 / file_base.replace("uncal", suffix))
             stage1_files.append(stage1_file)
-        pipe2 = Image2Pipeline()
+        pipe2 = Fourier2Pipeline()
         pipe2.save_results = True
         pipe2.output_dir = str(output_dir_stage2)
         pipe2.photom.skip = True
         pipe2.resample.skip = True
-        pipe2.run(stage1_files)
+        pipe2.run(stage1_files, step_list=steps_stage2, cfg_dict=config_dict)
