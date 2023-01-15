@@ -1,11 +1,14 @@
-input_file: /path/to/uncal/file.fits
+# Could also be a single line if one file. Handled by scripts
+input_files:
+  - /path/to/uncal/file.fits
 
+# The "&" part makes it possible to reference later in file
 output_dir_parent: &output_dir_parent results/example
 
 run_stage1: true
 run_stage2: true
 
-steps:
+steps_stage1:
   - group_scale
   - dq_init
   - saturation
@@ -19,11 +22,24 @@ steps:
   - ramp_fit
   - gain_scale
 
-step_config:
+steps_stage2:
+  - bkg_subtract
+  - assign_wcs
+  - flat_field
+  - photom
+  - resample
+
+# Config for stage 1 steps. If step is not in list, config not used.
+stage1_config:
+  # For 1/f (OOF) step, option to save intermediate files and step result.
+  # This can take up a lot of space for large files.
   oneoverf:
-    save_results: true
-    save_intermediate: true
+    save_results: false
+    save_intermediate: false
     output_dir: *output_dir_parent
   # Prevent ramp fitting from taking to many cores
   ramp_fit:
     max_cores: quarter
+  # Trapsfilled are saved by default in persistence step
+  persistence:
+    save_trapsfilled: false
